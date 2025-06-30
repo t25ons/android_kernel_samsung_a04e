@@ -88,15 +88,22 @@ static const struct svdm_svid_ops svdm_svid_ops[] = {
 int dpm_check_supported_modes(void)
 {
 	int i;
-	const int size = ARRAY_SIZE(svdm_svid_ops);
+	bool is_disorder = false;
+	bool found_error = false;
 
-	for (i = 0; i < size; i++) {
+	for (i = 0; i < ARRAY_SIZE(svdm_svid_ops); i++) {
+		if (i < (ARRAY_SIZE(svdm_svid_ops) - 1)) {
+			if (svdm_svid_ops[i + 1].svid <=
+				svdm_svid_ops[i].svid)
+				is_disorder = true;
+		}
 		pr_info("SVDM supported mode [%d]: name = %s, svid = 0x%x\n",
 			i, svdm_svid_ops[i].name,
 			svdm_svid_ops[i].svid);
 	}
-
-	return 0;
+	pr_info("%s : found \"disorder\"...\n", __func__);
+	found_error |= is_disorder;
+	return found_error ? -EFAULT : 0;
 }
 
 /*
@@ -144,6 +151,42 @@ int pd_dpm_send_sink_caps(struct pd_port *pd_port)
 	return pd_send_sop_data_msg(pd_port, PD_DATA_SINK_CAP,
 		snk_cap->nr, snk_cap->pdos);
 }
+/* HS14_U/TabA7 Lite U for AL6528AU-249/AX3565AU-309 by liufurong at 20231212 start */
+static struct pd_port_power_caps g_src_cap_5v0a = {
+	.nr = 1,
+	.pdos[0] = 0x00019000,
+};
+
+static struct pd_port_power_caps g_src_cap_5v500ma = {
+	.nr = 1,
+	.pdos[0] = 0x00019032,
+};
+
+void pd_dpm_send_source_caps_switch(int cur)
+{
+	static struct tcpc_device *tcpc = NULL;
+	struct pd_port_power_caps *src_cap = NULL;
+
+	if (tcpc == NULL) {
+		tcpc = tcpc_dev_get_by_name("type_c_port0");
+		if (tcpc == NULL) {
+			printk("get tcpc dev fail\n");
+		}
+	}
+
+	if (cur == 0) {
+		src_cap = &g_src_cap_5v0a;
+	} else if (cur == 500) {
+		src_cap = &g_src_cap_5v500ma;
+	} else {
+		src_cap = &tcpc->pd_port.local_src_cap_default;
+	}
+	printk("set src cap is %d ma, src_cap->pdos[0] = 0x%x", cur, src_cap->pdos[0]);
+	pd_send_sop_data_msg(&tcpc->pd_port, PD_DATA_SOURCE_CAP, src_cap->nr, src_cap->pdos);
+
+	return;
+}
+/* HS14_U/TabA7 Lite U for AL6528AU-249/AX3565AU-309 by liufurong at 20231212 end */
 
 int pd_dpm_send_source_caps(struct pd_port *pd_port)
 {
@@ -2316,7 +2359,7 @@ int pd_dpm_core_init(struct pd_port *pd_port)
 
 #ifdef CONFIG_USB_PD_REV30
 	pd_port->pps_request_wake_lock =
-		wakeup_source_register(NULL, "pd_pps_request_wake_lock");
+		wakeup_source_register(&tcpc->dev, "pd_pps_request_wake_lock");
 	init_waitqueue_head(&pd_port->pps_request_wait_que);
 	atomic_set(&pd_port->pps_request, false);
 	pd_port->pps_request_task = kthread_run(pps_request_thread_fn, tcpc,
